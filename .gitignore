@@ -1,0 +1,11 @@
+.svn
+Makefile
+svn-commit.tmp
+*_qml.cpp
+*.user
+*.pro
+evrazia_157x107_FR.jpg
+qml.qrc
+main.cpp
+main.qml
+
