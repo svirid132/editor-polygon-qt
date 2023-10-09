@@ -10,12 +10,18 @@
 #include <algorithm>
 #include <QPropertyAnimation>
 #include <QCursor>
-
-#include "cmath.h"
-using namespace CMath;
+#include <QDebug>
+#include <QPainterPath>
+#include <QDebug>
+#include <QIcon>
+#include "path.h"
+#include "point.h"
+#include "rect.h"
+#include <cmath>
+#include <functional>
 
 EditorPolygon::EditorPolygon(QQuickItem *parent)
-    : QQuickPaintedItem{parent}
+    : QQuickPaintedItem(parent)
 {
     setAcceptHoverEvents(true);
     setAcceptedMouseButtons(Qt::LeftButton);
@@ -25,6 +31,19 @@ EditorPolygon::EditorPolygon(QQuickItem *parent)
     anim->setEndValue(24);
     anim->setLoopCount(-1);
     anim->start();
+
+
+    verSvg = QIcon(":/resize.svg").pixmap(QSize(24, 24));
+    QMatrix m;
+    m.rotate(90);
+    horSvg = verSvg.transformed(m);
+    m = QMatrix();
+    m.rotate(45);
+    topCrossSvg = horSvg.transformed(m);
+    m = QMatrix();
+    m.rotate(-45);
+    bottomCrossSvg = horSvg.transformed(m);
+    rotateSvg = QIcon(":/rotate.svg").pixmap(QSize(24, 24));
 }
 
 QVector<QPointF> EditorPolygon::points()
@@ -37,64 +56,120 @@ void EditorPolygon::setPoints(const QVector<QPointF>& points)
     if (m_points == points) {
         return;
     }
-    qDebug() << "points:" <<points;
     m_points = points;
-    m_outPoints = points;
-    m_frame = findFrame();
-
+    auto ps = m_points;
+    ps.removeLast();
+    polygon = Polygon(ps);
+    frame = findFrame();
     update();
     emit pointsChanged();
 }
 
 QVector<QPointF> EditorPolygon::outPoints()
 {
-    return m_outPoints;
+    auto points = polygon.getPoints();
+    if (points.size() > 0) {
+        points.append(points[0]);
+    }
+    return points;
 }
 
-QVector<QPointF> EditorPolygon::findFrame()
+void EditorPolygon::update()
 {
-    if (m_outPoints.size() == 0) {
-        return QVector<QPointF>();
-    }
-    QPointF bottomLeft = m_outPoints[0]; QPointF topRight = m_outPoints[0];
-    std::for_each(m_outPoints.begin(), m_outPoints.end(), [&](const QPointF& point) {
-        if (point.x() < bottomLeft.x()) {
-            bottomLeft.setX(point.x());
-        }
-        if (point.y() < bottomLeft.y()) {
-            bottomLeft.setY(point.y());
-        }
-        if (point.x() > topRight.x()) {
-            topRight.setX(point.x());
-        }
-        if (point.y() > topRight.y()) {
-            topRight.setY(point.y());
-        }
-    });
-    QVector<QPointF> frame;
-    const float offset = offsetSide + widthSidePen / 2;
-    frame << QPointF(bottomLeft.x() - offset, bottomLeft.y() - offset)
-          << QPointF(topRight.x() + offset, bottomLeft.y() - offset)
-          << QPointF(topRight.x() + offset, topRight.y() + offset)
-          << QPointF(bottomLeft.x() - offset, topRight.y() + offset)
-          << QPointF(bottomLeft.x() - offset, bottomLeft.y() - offset);
+    Polygon zoomedPolygon = this->polygon;
+    Polygon::zoom(&zoomedPolygon, contentX(), contentY(), scalePoints());
+    this->zoomedPolygon = zoomedPolygon;
+    updateFramePaths();
+    QQuickPaintedItem::update();
+}
 
+void EditorPolygon::updateFramePaths() {
+    std::array<Rect, 4> corners;
+    std::array<Rect, 4> rotations;
+    float halfFrameWidth = frame.width() / 2;
+    float halfFrameHeight = frame.height() / 2;
+    float halfBorder = frameBorder / 2;
+    float unzoomedHalfBorder = halfBorder / m_scale;
+    float unzoomedCornerSize = frameCornerSize / m_scale;
+    float unzoomedRotateSize = frameRotateSize / m_scale;
+    QPointF frameCenter = frame.center();
+    for (int index = 0; index < frameCorners.size(); ++index) {
+        Rect corrnerRect;
+        Rect rotateRect;
+        if (index == 0) {
+            QPointF p = QPointF(frameCenter.x() - halfFrameWidth - unzoomedHalfBorder, frameCenter.y() - halfFrameHeight - unzoomedHalfBorder);
+            corrnerRect = Rect(p, unzoomedCornerSize, unzoomedCornerSize);
+            rotateRect = Rect(p, unzoomedRotateSize, unzoomedRotateSize);
+        } else if (index == 1) {
+            QPointF p = QPointF(frameCenter.x() + halfFrameWidth + unzoomedHalfBorder - unzoomedCornerSize, frameCenter.y() - unzoomedHalfBorder - halfFrameHeight);
+            QPointF rotateP = QPointF(frameCenter.x() + halfFrameWidth + unzoomedHalfBorder - unzoomedRotateSize, frameCenter.y() - unzoomedHalfBorder - halfFrameHeight);
+            corrnerRect = Rect(p, unzoomedCornerSize, unzoomedCornerSize);
+            rotateRect = Rect(rotateP, unzoomedRotateSize, unzoomedRotateSize);
+        } else if (index == 2) {
+            QPointF p = QPointF(frameCenter.x() + halfFrameWidth + unzoomedHalfBorder - unzoomedCornerSize, frameCenter.y() + halfFrameHeight + unzoomedHalfBorder - unzoomedCornerSize);
+            QPointF rotateP = QPointF(frameCenter.x() + halfFrameWidth + unzoomedHalfBorder - unzoomedRotateSize, frameCenter.y() + halfFrameHeight + unzoomedHalfBorder - unzoomedRotateSize);
+            corrnerRect = Rect(p, unzoomedCornerSize, unzoomedCornerSize);
+            rotateRect = Rect(rotateP, unzoomedRotateSize, unzoomedRotateSize);
+        } else if (index == 3) {
+            QPointF p = QPointF(frameCenter.x() - unzoomedHalfBorder - halfFrameWidth, frameCenter.y() + halfFrameHeight + unzoomedHalfBorder - unzoomedCornerSize);
+            QPointF rotateP = QPointF(frameCenter.x() - unzoomedHalfBorder - halfFrameWidth, frameCenter.y() + halfFrameHeight + unzoomedHalfBorder - unzoomedRotateSize);
+            corrnerRect = Rect(p, unzoomedCornerSize, unzoomedCornerSize);
+            rotateRect = Rect(rotateP, unzoomedRotateSize, unzoomedRotateSize);
+        }
+        corrnerRect.rotate(frame.rotationAngle(), frame.center());
+        rotateRect.rotate(frame.rotationAngle(), frame.center());
+        corners[index] = corrnerRect;
+        rotations[index] = rotateRect;
+    }
+    this->frameCorners = corners;
+    this->frameRotates = rotations;
+    std::array<Rect, 4> sides;
+    float frameWidth = frame.width();
+    float frameHeight = frame.height();
+    for (int index = 0; index < frameSides.size(); ++index) {
+        Rect rect;
+        if (index == 0) {
+            QPointF p = QPointF(frameCenter.x() - halfFrameWidth - unzoomedHalfBorder, frameCenter.y() - halfFrameHeight - unzoomedHalfBorder);
+            rect = Rect(p, frameWidth + 2 * unzoomedHalfBorder, 2 * unzoomedHalfBorder);
+        } else if (index == 1) {
+            QPointF p = QPointF(frameCenter.x() + halfFrameWidth - unzoomedHalfBorder, frameCenter.y() - unzoomedHalfBorder - halfFrameHeight);
+            rect = Rect(p, 2 * unzoomedHalfBorder, frameHeight + 2 * unzoomedHalfBorder);
+        } else if (index == 2) {
+            QPointF p = QPointF(frameCenter.x() - halfFrameWidth - unzoomedHalfBorder, frameCenter.y() + halfFrameHeight - unzoomedHalfBorder);
+            rect = Rect(p, frameWidth + 2 * unzoomedHalfBorder, 2 * unzoomedHalfBorder);
+        } else if (index == 3) {
+            QPointF p = QPointF(frameCenter.x() - halfFrameWidth - unzoomedHalfBorder, frameCenter.y() - halfFrameHeight - unzoomedHalfBorder);
+            rect = Rect(p, 2 * unzoomedHalfBorder, frameHeight + 2 * unzoomedHalfBorder);
+        }
+        rect.rotate(frame.rotationAngle(), frame.center());
+        sides[index] = rect;
+    }
+    this->frameSides = sides;
+}
+
+Rect EditorPolygon::findFrame()
+{
+    QPointF point = polygon.leftBottomPoint();
+    frame = Rect(QPointF(point.x() - polygonPadding, point.y() - polygonPadding),
+                 polygon.width() + polygonPadding * 2,
+                 polygon.height() + polygonPadding * 2
+                 );
     return frame;
 }
 
 void EditorPolygon::setScalePoints(qreal scalePoints)
 {
-    if (m_scalePoints == scalePoints) {
+    if (m_scale == scalePoints) {
         return;
     }
-    m_scalePoints = scalePoints;
+    m_scale = scalePoints;
     update();
     emit scalePointsChanged();
 }
 
 qreal EditorPolygon::scalePoints()
 {
-    return m_scalePoints;
+    return m_scale;
 }
 
 qreal EditorPolygon::contentX()
@@ -129,173 +204,174 @@ void EditorPolygon::setContentY(qreal y)
     emit contentYChanged();
 }
 
-void EditorPolygon::calcZoom()
-{
-//    QVector<QPointF> newPoints = QVector<QPointF>(m_outPoints.length());
-//    qDebug() << m_contentX;
-//    for (int i = 0; i < m_outPoints.length(); ++i) {
-//        newPoints[i] = QPointF(m_contentX + m_outPoints[i].x() * m_scalePoints,
-//                               m_contentY + m_outPoints[i].y() * m_scalePoints);
-//    }
-//    m_outPoints = newPoints;
-//    m_frame = findFrame();
-
-}
-
 void EditorPolygon::paint(QPainter *painter)
 {
     painter->setRenderHint(QPainter::Antialiasing, true);
 
-    QVector<QPointF> scalePolygon = QVector<QPointF>(m_outPoints.length());
-    for (int i = 0; i < m_outPoints.length(); ++i) {
-        scalePolygon[i] = QPointF(m_contentX + m_outPoints[i].x() * m_scalePoints,
-                               m_contentY + m_outPoints[i].y() * m_scalePoints);
-    }
-    QVector<QPointF> scaleFrame = QVector<QPointF>(m_frame.length());
-    for (int i = 0; i < scaleFrame.length(); ++i) {
-        scaleFrame[i] = QPointF(m_contentX + m_frame[i].x() * m_scalePoints,
-                               m_contentY + m_frame[i].y() * m_scalePoints);
-    }
-
     //Polygon
-    QPolygonF polygon(scalePolygon);
-    painter->save();
-    QPen pen;
-    pen.setColor(QColor("white"));
-    painter->setPen(pen);
-    painter->drawPolygon(polygon);
-    painter->restore();
-
-    //Polygon circle
-    painter->save();
-    pen = QPen();
-    for (int i = 0; i < scalePolygon.length(); ++i) {
-        QPointF p = scalePolygon[i];
-        polygon[i] = QPointF(p.x(), p.y());
-        painter->setBrush(QBrush(QColor("white")));
-        painter->setPen(QColor("transparent"));
-        painter->drawEllipse(p, circleRad, circleRad);
+    int selectedIndex = -1;
+    Polygon::Mode mode = selectedElement.type == Element::PolygonPolygon ? Polygon::POLYGON : Polygon::POINT;
+    if (selectedElement.type == Element::PolygonPoint || selectedElement.type == Element::PolygonPolygon) {
+        selectedIndex = selectedElement.index;
     }
-    painter->restore();
-    if (m_frame.size() != 5 || !isVisibleFrame) {
+    zoomedPolygon.draw(painter, selectedIndex, mode);
+
+    if (frameOpacity() == 0.0) {
         return;
     }
 
-    //side frame
-    painter->save();
-    pen = QPen();
-    pen.setColor(QColor("#20ffffff"));
-    pen.setWidth(widthSidePen);
-    painter->setPen(pen);
-    painter->drawPolygon(scaleFrame);
-    painter->restore();
+    painter->setOpacity(frameOpacity());
 
-    //dash frame
-    painter->save();
-    pen = QPen();
-    QVector<qreal> dashes;
-    qreal space = 6;
-    dashes << 2 << space;
-    if (rotateActive) {
-        pen.setColor("#FFC700");
-    } else {
-        pen.setColor(QColor("white"));
-    }
-    pen.setDashPattern(dashes);
-    pen.setWidth(2);
-    pen.setDashOffset(m_offsetDash);
-    painter->setPen(pen);
-    painter->drawPolygon(scaleFrame);
-    painter->restore();
-
-    //indicator frame side
-    painter->save();
-    const float widthIndSide = 40 * m_scalePoints;
-    const float widthFrame = calcLength(scaleFrame[0], scaleFrame[1]);
-    const float heightFrame = calcLength(scaleFrame[1], scaleFrame[2]);
-    float offsetWidth = widthFrame / 2 - widthIndSide / 2;
-    float offsetHeight = heightFrame / 2 - widthIndSide / 2;
-    pen = QPen();
-    pen.setWidth(widthSidePen + 2);
-    painter->setPen(pen);
-    for(int i = 0; i < scaleFrame.length() - 1; ++i) {
-        QPointF vec = findUnitVector(scaleFrame[i], scaleFrame[i + 1]);
-        if (sideActive == i) {
+    // frame
+    Rect zoomedFrame = this->frame;
+    Rect::zoom(&zoomedFrame, contentX(), contentY(), scalePoints());
+    zoomedFrame.draw([this, painter](const QVector<QPointF>& points) {
+        painter->save();
+        QPen pen = QPen();
+        pen.setColor(QColor("#20ffffff"));
+        pen.setWidth(frameBorder);
+        painter->setPen(pen);
+        painter->drawPolygon(points);
+        painter->restore();
+        painter->save();
+        pen = QPen();
+        QVector<qreal> dashes;
+        qreal space = 6;
+        dashes << 2 << space;
+        if (selectedElement.type == Element::Rotate) {
             pen.setColor("#FFC700");
         } else {
-            pen.setColor(QColor("#2496FF"));
+            pen.setColor(QColor("white"));
         }
+        pen.setDashPattern(dashes);
+        pen.setWidth(2);
+        pen.setDashOffset(m_offsetDash);
         painter->setPen(pen);
-        if (i % 2) {
-            QPointF beginP = QPointF(scaleFrame[i].x() + vec.x() * offsetHeight, scaleFrame[i].y() + vec.y()* offsetHeight);
-            QPointF endP = QPointF(beginP.x() + vec.x() * widthIndSide, beginP.y() + vec.y() * widthIndSide);
-            painter->drawLine(beginP, endP);
-        } else {
-            QPointF beginP = QPointF(scaleFrame[i].x() + vec.x() * offsetWidth, scaleFrame[i].y() + vec.y()* offsetWidth);
-            QPointF endP = QPointF(beginP.x() + vec.x() * widthIndSide, beginP.y() + vec.y() * widthIndSide);
-            painter->drawLine(beginP, endP);
+        painter->drawPolygon(points);
+        painter->restore();
+    });
+
+
+    // индикаторы перемещение сторон у frame
+    painter->save();
+    painter->setPen(QPen("transparent"));
+    float halfBorder = frameBorder / 2;
+    float halfZoomedFrameWidth = zoomedFrame.width() / 2;
+    float halfZoomedFrameHeight = zoomedFrame.height() / 2;
+    QPointF center = zoomedFrame.center();
+    for (int index = 0; index < frameSides.size(); ++index) {
+        QPointF origin;
+        const float indWidth = index % 2 ? halfZoomedFrameHeight / 2.5 : halfZoomedFrameWidth / 2.5;
+        float halfIndWidth = indWidth / 2;
+        if (index == 0) {
+            origin = QPointF(center.x() - halfIndWidth, center.y() - halfZoomedFrameHeight - halfBorder);
+        } else if (index == 1) {
+            origin = QPointF(center.x() + halfZoomedFrameWidth - halfBorder , center.y() - halfIndWidth);
+        } else if (index == 2) {
+            origin = QPointF(center.x() - halfIndWidth, center.y() + halfZoomedFrameHeight - halfBorder);
+        } else if (index == 3) {
+            origin = QPointF(center.x() - halfZoomedFrameWidth - halfBorder , center.y() - halfIndWidth);
         }
+        Rect rect = index % 2 ? Rect(origin, frameBorder, indWidth) : Rect(origin, indWidth, frameBorder);
+        rect.rotate(zoomedFrame.rotationAngle(), zoomedFrame.center());
+        rect.draw([this, painter, index](const QVector<QPointF>& points) {
+            if (selectedElement.index == index && selectedElement.type == Element::Scale) {
+                painter->setBrush(QBrush("#FFC700"));
+            } else {
+                painter->setBrush(QBrush(QColor("#2496FF")));
+            }
+            painter->drawPolygon(points);
+        });
     }
     painter->restore();
 
-    //indicator frame corner
+    // индикатор углов у frame
     painter->save();
-    const float widthIndCorner = 7 * m_scalePoints;
-    pen = QPen();
-    pen.setWidth(widthSidePen + 2);
-    for(int i = 0; i < scaleFrame.length() - 1; ++i) {
-        if (cornerActive == i) {
+    int index = 0;
+    const float cornerIndWidth = halfZoomedFrameWidth / 20;
+    float zoomedFrameAngle = zoomedFrame.rotationAngle();
+    QPointF zoomedFrameCenter = zoomedFrame.center();
+    QPen pen;
+    pen.setWidth(frameBorder);
+    QPointF p2, p1, p3;
+    for (int index = 0; index < frameSides.size(); ++index) {
+        if (selectedElement.type == Element::Corner && selectedElement.index == index) {
             pen.setColor("#FFC700");
         } else {
-            pen.setColor(QColor("#2496FF"));
+            pen.setColor("#2496FF");
         }
         painter->setPen(pen);
-        painter->setPen(pen);
-        QPointF vec = findUnitVector(scaleFrame[i], scaleFrame[i + 1]);
-        QPointF endP_1 = QPointF(scaleFrame[i].x() + vec.x() * widthIndCorner, scaleFrame[i].y() + vec.y() * widthIndCorner);
-        QPointF endP_2 = QPointF(scaleFrame[i].x() - vec.y() * widthIndCorner, scaleFrame[i].y() + vec.x() * widthIndCorner); // перевенули на 90 градусов
-        painter->drawLine(scaleFrame[i], endP_1);
-        painter->drawLine(scaleFrame[i], endP_2);
+        if (index == 0) {
+            p2 = QPointF(zoomedFrameCenter.x() - halfZoomedFrameWidth, zoomedFrameCenter.y() - halfZoomedFrameHeight);
+            p1 = QPointF(p2.x(), p2.y() + cornerIndWidth);
+            p3 = QPointF(p2.x() + cornerIndWidth, p2.y());
+        } else if (index == 1) {
+            p2 = QPointF(zoomedFrameCenter.x() + halfZoomedFrameWidth, zoomedFrameCenter.y() - halfZoomedFrameHeight);
+            p1 = QPointF(p2.x(), p2.y() + cornerIndWidth);
+            p3 = QPointF(p2.x() - cornerIndWidth, p2.y());
+        } else if (index == 2) {
+            p2 = QPointF(zoomedFrameCenter.x() + halfZoomedFrameWidth, zoomedFrameCenter.y() + halfZoomedFrameHeight);
+            p1 = QPointF(p2.x(), p2.y() - cornerIndWidth);
+            p3 = QPointF(p2.x() - cornerIndWidth, p2.y());
+        } else if (index == 3) {
+            p2 = QPointF(zoomedFrameCenter.x() - halfZoomedFrameWidth, zoomedFrameCenter.y() + halfZoomedFrameHeight);
+            p1 = QPointF(p2.x(), p2.y() - cornerIndWidth);
+            p3 = QPointF(p2.x() + cornerIndWidth, p2.y());
+        }
+        Path path(QVector<QPointF>{p1, p2, p2, p3});
+        path.rotate(zoomedFrameAngle, zoomedFrameCenter);
+        path.draw([painter](const QVector<QPointF>& points) {
+            painter->drawLines(points.data(), 2);
+        });
     }
     painter->restore();
 
-//    //corners
-//    auto corners = cornerFrame(scaleFrame);
-//    for (int i = 0; i < corners.length(); ++i) {
-//        for (int a = 0; a < 4; ++a) {
-//            painter->drawLine(corners[i][a], corners[i][(a+1)%4]);
-//        }
+    // Провекра правильности непрорисованых элементов
+
+//    painter->save();
+//    //    painter->setBrush(QBrush("red"));
+//    painter->setPen(QPen("red"));
+
+//    // corners
+//    for (int i = 0; i < frameCorners.size(); ++i) {
+//        Rect rect = frameCorners[i];
+//        Rect::zoom(&rect, contentX(), contentY(), scalePoints());
+//        rect.draw(painter);
 //    }
-//    //rotate
-//    auto rotate = rotateFrame(scaleFrame);
-//    for (int i = 0; i < corners.length(); ++i) {
-//        for (int a = 0; a < 4; ++a) {
-//            painter->drawLine(rotate[i][a], rotate[i][(a+1)%4]);
-//        }
+//    // rotations
+//    for (int i = 0; i < frameRotates.size(); ++i) {
+//        Rect rect = frameRotates[i];
+//        Rect::zoom(&rect, contentX(), contentY(), scalePoints());
+//        rect.draw(painter);
 //    }
-//    //sides
-//    auto sides = sideFrame(scaleFrame);
-//    for (int i = 0; i < sides.length(); ++i) {
-//        for (int a = 0; a < 4; ++a) {
-//            painter->drawLine(sides[i][a], sides[i][(a+1)%4]);
-//        }
+//    // sides
+//    for (int i = 0; i < frameSides.size(); ++i) {
+//        Rect rect = frameSides[i];
+//        Rect::zoom(&rect, contentX(), contentY(), scalePoints());
+//        rect.draw(painter);
 //    }
+//    // rectLines
+//    for (int i = 0; i < zoomedPolygon.rectLineSize(); ++i) {
+//        Rect rect = zoomedPolygon.getRectLine(i, rectLineHeight);
+//        rect.draw(painter);
+//    }
+//    painter->restore();
 }
 
 QPointF EditorPolygon::scalePoint(const QPointF &p)
 {
-    return QPointF(p.x() * m_scalePoints, p.y() * m_scalePoints);
+    return QPointF(p.x() * m_scale, p.y() * m_scale);
 }
 
 QPointF EditorPolygon::unscalePoint(const QPointF &p)
 {
-    return QPointF(p.x() / m_scalePoints, p.y() / m_scalePoints);
+    return QPointF(p.x() / m_scale, p.y() / m_scale);
 }
 
 void EditorPolygon::setOffsetDash(qreal offset) {
     m_offsetDash = offset;
     emit offsetDashChanged();
-    update();
+    QQuickPaintedItem::update();
 }
 
 qreal EditorPolygon::offsetDash()
@@ -303,395 +379,263 @@ qreal EditorPolygon::offsetDash()
     return m_offsetDash;
 }
 
-QPointF EditorPolygon::calcUnscalePoint(const QPointF &point)
+qreal EditorPolygon::frameOpacity()
 {
-    return QPointF((point.x() - m_contentX) / m_scalePoints,
-                                   (point.y() - m_contentY) / m_scalePoints);
+    return m_frameOpacity;
 }
 
-QVector<Rect> EditorPolygon::cornerFrame(const QVector<QPointF>& frame)
+void EditorPolygon::setFrameOpacity(qreal opacity)
 {
-    float halfWidthSide = widthSidePen / 2;
-    const float d = calcLength(QPointF(halfWidthSide, halfWidthSide));
-    const float rectWidth = cornerWidth;
-    QVector<Rect> corners;
-    for (int i = 0; i < 4; ++i) {
-        // стрелка на 10.5 часах
-        QPointF v = calcVector(frame[(i + 1) % 4], frame[i]);
-        v = rotate45(v);
-        v = findUnitVector(v);
-        QPointF originV = multiPoint(d, v);
-        QPointF originP = sumPoint(frame[i], originV);
-        //Стрелка на 3 часах
-        v = rotate45(v); v = rotate90(v);
-        QPointF rectV = multiPoint(rectWidth, v);
-        Rect rect = Rect(4);
-        rect[0] = originP;
-        QPointF p = rect[0];
-        // Стрелка на 3, 6, 9 часах
-        for (int i = 1; i < 4; ++i) {
-            p = sumPoint(p, rectV);
-            rect[i] = p;
-            rectV = rotate90(rectV);
-        }
-        corners.push_back(rect);
+    if (m_frameOpacity == opacity) {
+        return;
     }
-
-    return corners;
+    m_frameOpacity = opacity;
+    QQuickPaintedItem::update();
+    emit frameOpacityChanged();
 }
 
-QVector<Rect> EditorPolygon::sideFrame(const QVector<QPointF>& frame)
+void EditorPolygon::visibleFrame()
 {
-    float halfWidthSide = widthSidePen / 2;
-    QVector<Rect> sides;
-    for (int i = 0; i < 4; ++i) {
-        QPointF v = calcVector(frame[i], frame[(i + 1) % 4]);
-        v = rotate90(v);
-        v = findUnitVector(v);
-        v = multiPoint(halfWidthSide, v);
-        QPointF p1 = sumPoint(frame[i], v);
-        QPointF p2 = sumPoint(frame[(i + 1) % 4], v);
-        v = rotate90N(v);
-        v = rotate90N(v);
-        QPointF p3 = sumPoint(frame[(i + 1) % 4], v);
-        QPointF p4 = sumPoint(frame[i], v);
-        Rect rect = {p1, p2, p3, p4};
-        sides.append(rect);
+    if (frameOpacity() == 1.0) {
+        return;
     }
-
-    return sides;
+    QPropertyAnimation *anim = new QPropertyAnimation(this, "frameOpacity", this);
+    anim->setDuration(200);
+    anim->setStartValue(0.0);
+    anim->setEndValue(1.0);
+    anim->start();
 }
 
-QVector<Rect> EditorPolygon::rotateFrame(const QVector<QPointF>& frame)
+void EditorPolygon::unvisibleFrame()
 {
-    float halfWidthSide = widthSidePen / 2;
-    const float d = calcLength(QPointF(halfWidthSide, halfWidthSide));
-    const float rectWidth = rotateWidth;
-    QVector<Rect> corners;
-    for (int i = 0; i < 4; ++i) {
-        // стрелка на 10.5 часах
-        QPointF v = calcVector(frame[i], frame[(i + 1) % 4]);
-        v = rotate45(v);
-        v = findUnitVector(v);
-        QPointF originV = multiPoint(d, v);
-        QPointF originP = sumPoint(frame[i], originV);
-        //Стрелка на 3 часах
-        v = rotate45(v); v = rotate90(v);
-        QPointF rectV = multiPoint(rectWidth, v);
-        Rect rect = Rect(4);
-        rect[0] = originP;
-        QPointF p = rect[0];
-        // Стрелка на 3, 6, 9 часах
-        for (int i = 1; i < 4; ++i) {
-            p = sumPoint(p, rectV);
-            rect[i] = p;
-            rectV = rotate90(rectV);
-        }
-        corners.push_back(rect);
+    if (frameOpacity() == 0.0) {
+        return;
     }
-
-    return corners;
+    QPropertyAnimation *anim = new QPropertyAnimation(this, "frameOpacity", this);
+    anim->setDuration(200);
+    anim->setStartValue(1.0);
+    anim->setEndValue(0.0);
+    anim->start();
 }
 
-
+QPointF EditorPolygon::unzoomPoint(const QPointF &point)
+{
+    return QPointF((point.x() - m_contentX) / m_scale,
+                   (point.y() - m_contentY) / m_scale);
+}
 
 void EditorPolygon::mousePressEvent(QMouseEvent *event)
 {
-    if (m_frame.size() != 5) {
+    QPointF pos = unzoomPoint(event->localPos());
+    savedPos = pos;
+    const int frameSize = 4; // стороны, углы
+    savedPolygon = polygon;
+    savedFrame = frame;
+    update();
+    for (int index = 0; index < frameSize; ++index) {
+        if (frameCorners[index].contains(pos)) {
+            selectedElement.type = Element::Corner;
+            selectedElement.index = index;
+            return;
+        } else if (frameRotates[index].contains(pos)) {
+            selectedElement.type = Element::Rotate;
+            selectedElement.index = index;
+            return;
+        }
+    }
+    for (int index = 0; index < frameSize; ++index) {
+        if (frameSides[index].contains(pos)) {
+            selectedElement.type = Element::Scale;
+            selectedElement.index = index;
+            return;
+        }
+    }
+    if (m_mode == Mode::POINT) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            Point p = polygon.getPoint(index);
+            p.setRadius(p.radius() / scalePoints());
+            if (p.contains(pos)) {
+                selectedElement.type = Element::PolygonPoint;
+                selectedElement.index = index;
+                unvisibleFrame();
+                return;
+            }
+        }
+    } else if (m_mode == Mode::POLYGON) {
+        QPointF pos = event->localPos();
+        for (int index = 0; index < polygon.rectLineSize(); ++index) {
+            Rect rect = zoomedPolygon.getRectLine(index, rectLineHeight);
+            if (rect.contains(pos)) {
+                selectedElement.type = Element::PolygonPolygon;
+                selectedElement.index = index;
+                unvisibleFrame();
+                return;
+            }
+        }
+    }
+    if (frame.contains(pos)) {
+        selectedElement.type = Element::Transition;
+        selectedElement.index = -1;
         return;
     }
-    savedPos = calcUnscalePoint(event->localPos());
-    const QPointF scalePos = event->localPos();
-    //polyon
-    for (int i = 0; i < m_outPoints.length(); ++i) {
-        if (isContainsCircle(savedPos, m_outPoints[i], circleRad)) {
-            currentState = StateChanged::Point;
-            saved_m_points = m_outPoints;
-            indexPoint = i;
-            isVisibleFrame = false;
-            update();
-            return;
-        }
-    }
-    QVector<QPointF> scaleFrame = QVector<QPointF>(m_frame.length());
-    for (int i = 0; i < scaleFrame.length(); ++i) {
-        scaleFrame[i] = QPointF(m_contentX + m_frame[i].x() * m_scalePoints,
-                               m_contentY + m_frame[i].y() * m_scalePoints);
-    }
-    auto corners = cornerFrame(scaleFrame);
-    auto rotates = rotateFrame(scaleFrame);
-    auto sides = sideFrame(m_frame);
-    for (int i = 0; i < 4; ++i) {
-        // corner
-        if (isContainsRect(scalePos, corners[i][3], corners[i][0], corners[i][1])) {
-            saved_m_frame = m_frame;
-            saved_m_points = m_outPoints;
-            currentState = Rotate;
-            currentIndexSide = i;
-            saved_m_frame = m_frame;
-            saved_m_points = m_outPoints;
-            QPointF normal = QPointF(0, 1);
-            QPointF vecSide(m_frame[1].x() - m_frame[0].x(), m_frame[1].y() - m_frame[0].y());
-            float dot = dotProduct(vecSide, normal);
-            savedWidthFrame = calcLength(m_frame[0], m_frame[1]);
-            savedHeightFrame = calcLength(m_frame[1], m_frame[2]);
-            float angle = std::acos(float(vecSide.x()) / savedWidthFrame);
-            angleFrame = dot > 0 ? angle : -angle;
-            currentState = Corner;
-            cornerActive = i;
-            return;
-        }
-        // rotate
-        if (isContainsRect(scalePos, rotates[i][3], rotates[i][0], rotates[i][1])) {
-            saved_m_frame = m_frame;
-            saved_m_points = m_outPoints;
-            currentState = Rotate;
-            rotateActive = true;
-            return;
-        }
-    }
-    for (int i = 0; i < 4; ++i) {
-        // side
-        if(isContainsRect(savedPos, sides[i][3], sides[i][0], sides[i][1]))
-        {
-            currentIndexSide = i;
-            saved_m_frame = m_frame;
-            saved_m_points = m_outPoints;
-            QPointF normal = QPointF(0, 1);
-            QPointF vecSide(m_frame[1].x() - m_frame[0].x(), m_frame[1].y() - m_frame[0].y());
-            float dot = dotProduct(vecSide, normal);
-            savedWidthFrame = calcLength(m_frame[0], m_frame[1]);
-            savedHeightFrame = calcLength(m_frame[1], m_frame[2]);
-            float angle = std::acos(float(vecSide.x()) / savedWidthFrame);
-            angleFrame = dot > 0 ? angle : -angle;
-            currentState = Scale;
-            sideActive = i;
-            return;
-        }
-    }
-    // fill
-    if(isContainsRect(savedPos, m_frame[3], m_frame[0], m_frame[1])) {
-        currentState = StateChanged::Transition;
-        saved_m_frame = m_frame;
-        saved_m_points = m_outPoints;
-        return;
-    }
-    emit clickBack();
 }
 
 void EditorPolygon::mouseMoveEvent(QMouseEvent *event)
 {
-    QPointF localPos = calcUnscalePoint(event->localPos());
-    if (currentState == StateChanged::Point) {
-        const QPointF vec = QPointF(localPos.x() - savedPos.x(), localPos.y() - savedPos.y());
-        if (indexPoint == 0 || indexPoint == (saved_m_points.length() - 1)) {
-            m_outPoints[0] = QPointF(saved_m_points[0].x() + vec.x(), saved_m_points[0].y() + vec.y());
-            m_outPoints[saved_m_points.length() - 1] = QPointF(saved_m_points[saved_m_points.length() - 1].x() + vec.x(), saved_m_points[saved_m_points.length() - 1].y() + vec.y());
-            update();
-            return;
-        }
-        m_outPoints[indexPoint] = QPointF(saved_m_points[indexPoint].x() + vec.x(), saved_m_points[indexPoint].y() + vec.y());
-        update();
+    if (selectedElement.type == Element::NoType) {
         return;
-    } else if (currentState == StateChanged::Transition) {
-        QPointF transition = QPointF(localPos.x() - savedPos.x(), localPos.y() - savedPos.y());
-        QVector<QPointF> new_m_frame(saved_m_frame.length());
-        Matrix matrix(1, 0, 0, 1, transition.x(), transition.y());
-        for (int i = 0; i < new_m_frame.length(); ++i) {
-            QPointF p = saved_m_frame[i];
-            new_m_frame[i] = matrix.multiVector(p);
-        }
-        QVector<QPointF> new_m_points(saved_m_points);
-        for (int i = 0; i < saved_m_points.length(); ++i) {
-            QPointF p = saved_m_points[i];
-            new_m_points[i] = matrix.multiVector(p);
-        }
-        m_frame = new_m_frame;
-        m_outPoints = new_m_points;
+    }
+    QPointF pos = unzoomPoint(event->localPos());
+    Polygon newPolygon = savedPolygon;
+    Rect newFrame = savedFrame;
+    auto updateFrame = [&]() {
+        frame = newFrame;
+        polygon = newPolygon;
         update();
-        return;
-    } else if (currentState == StateChanged::Rotate) {
-        QPointF center = QPointF(
-                    (saved_m_frame[0].x() + saved_m_frame[2].x()) / 2,
-                (saved_m_frame[0].y() + saved_m_frame[2].y()) / 2
-                );
-        QPointF beginVector = calcVector(center, savedPos);
-        QPointF ordinatVector = rotate90(beginVector);
-        QPointF endVector = calcVector(center, localPos);
-        float cos = dotProduct(beginVector, endVector) / (calcLength(beginVector) * calcLength(endVector));
+    };
+    if (selectedElement.type == Element::Transition) {
+        QPointF v = amath::vector(pos, savedPos);
+        newFrame.translate(v);
+        newPolygon.translate(v);
+        updateFrame();
+    } else if (selectedElement.type == Element::Scale || selectedElement.type == Element::Corner) {
+        float minSize = 10;
+        int ind = selectedElement.index;
+        QPointF trans = amath::vector(pos, savedPos);
+        QPointF v1 = amath::vector(savedFrame[ind], savedFrame[ind + 1]);
+        QPointF normUnit1 = amath::normal(amath::unit(v1));
+        QPointF v2 = amath::vector(savedFrame[ind + 3], savedFrame[ind + 4]);
+        QPointF normUnit2 = amath::normal(amath::unit(v2));
+        if (selectedElement.type == Element::Scale) {
+            if (ind % 2 == 1) {
+                float dx = amath::dotProduct(normUnit1, trans);
+                float Sx = 1 + dx / savedFrame.width();
+                if (savedFrame.width() * Sx < minSize) {
+                    return;
+                }
+                newFrame.scale(Sx, 1, savedFrame[ind + 2], savedFrame.rotationAngle());
+                newPolygon.scale(Sx, 1, savedFrame[ind + 2], savedFrame.rotationAngle());
+            } else {
+                float dy = amath::dotProduct(normUnit1, trans);
+                float Sy = 1 + dy / savedFrame.height();
+                if (savedFrame.height() * Sy < minSize) {
+                    return;
+                }
+                newFrame.scale(1, Sy, savedFrame[ind + 2], savedFrame.rotationAngle());
+                newPolygon.scale(1, Sy, savedFrame[ind + 2], savedFrame.rotationAngle());
+            }
+        } else if (selectedElement.type == Element::Corner) {
+            float dx = amath::dotProduct(ind % 2 == 0 ? normUnit2: normUnit1 , trans);
+            float dy = amath::dotProduct(ind % 2 == 0 ? normUnit1 : normUnit2, trans);
+            float Sx = 1 + dx / savedFrame.width();
+            float Sy = 1 + dy / savedFrame.height();
+            if (savedFrame.width() * Sx < minSize) {
+                return;
+            }
+            if (savedFrame.height() * Sy < minSize) {
+                return;
+            }
+            newFrame.scale(Sx, Sy, savedFrame[ind + 2], savedFrame.rotationAngle());
+            newPolygon.scale(Sx, Sy, savedFrame[ind + 2], savedFrame.rotationAngle());
+        }
+        updateFrame();
+    } else if (selectedElement.type == Element::Rotate) {
+        QPointF center = savedFrame.center();
+        QPointF beginVector = amath::vector(savedPos, center);
+        QPointF ordinatVector = amath::normal(beginVector);
+        QPointF endVector = amath::vector(pos, center);
+        float cos = amath::dotProduct(beginVector, endVector) / (amath::calcLength(beginVector) * amath::calcLength(endVector));
         float arccos = std::acos(cos);
-        float angle = dotProduct(ordinatVector, endVector) > 0 ? arccos : - arccos;
-        float a = std::cos(angle);
-        float b = std::sin(angle);
-        float c = -std::sin(angle);
-        float d = std::cos(angle);
-        float e = -center.x() * a - center.y() * c + center.x();
-        float f = -center.x() * b - center.y() * d + center.y();
-        QVector<QPointF> new_m_frame(saved_m_frame.length());
-        Matrix matrix(a, b, c, d, e, f);
-        for (int i = 0; i < new_m_frame.length(); ++i) {
-            QPointF p = saved_m_frame[i];
-            new_m_frame[i] = matrix.multiVector(p);
-        }
-        QVector<QPointF> new_m_points(saved_m_points);
-        for (int i = 0; i < saved_m_points.length(); ++i) {
-            QPointF p = saved_m_points[i];
-            new_m_points[i] = matrix.multiVector(p);
-        }
-        m_frame = new_m_frame;
-        m_outPoints = new_m_points;
-    } else if (currentState == StateChanged::Corner) {
-        const QPointF vec = QPointF(localPos.x() - savedPos.x(), localPos.y() - savedPos.y());
-        const int indexAngle = (currentIndexSide + 2 ) % 4;
-        const QPointF t = saved_m_frame[indexAngle];
-        QPointF p1 = saved_m_frame[currentIndexSide];
-        QPointF p2 = saved_m_frame[(currentIndexSide + 1) % 4];
-        QPointF p4 = saved_m_frame[(currentIndexSide + 3) % 4];
-        QVector2D normalP2 = calcNormal(p1, p2);
-        QVector2D normalP4 = calcNormal(p4, p1);
-        normalP2.normalize();
-        normalP4.normalize();
-        float multiX = 1; float multiY = 1;
-        if (currentIndexSide % 2) {
-            multiX = dotProduct(vec, normalP2.toPointF());
-            multiY = dotProduct(vec, normalP4.toPointF());
-        } else {
-            multiX = dotProduct(vec, normalP4.toPointF());
-            multiY = dotProduct(vec, normalP2.toPointF());
-        }
-        const float newWidth = savedWidthFrame + multiX;
-        multiX = newWidth / savedWidthFrame;
-        const float newHeight = savedHeightFrame + multiY;
-        multiY = newHeight / savedHeightFrame;
-        if (newHeight < 10 || newWidth < 10) return;
-        float sin = std::sin(angleFrame);
-        float cos = std::cos(angleFrame);
-        const float a = multiX * cos * cos + multiY * sin * sin;
-        const float b = multiX * sin * cos - multiY * cos * sin;
-        const float c = multiX * cos * sin - multiY * sin * cos;
-        const float d = multiX * sin * sin + multiY * cos * cos;
-        const float e = -t.x() * a - t.y() * c + t.x();
-        const float f = -t.x() * b - t.y() * d + t.y();
-        Matrix matrix(a, b, c, d, e, f);
-        QVector<QPointF> new_m_frame(saved_m_frame.length());
-        for (int i = 0; i < new_m_frame.length(); ++i) {
-            QPointF p = saved_m_frame[i];
-            new_m_frame[i] = matrix.multiVector(p);
-        }
-        QVector<QPointF> new_m_points(saved_m_points);
-        for (int i = 0; i < saved_m_points.length(); ++i) {
-            QPointF p = saved_m_points[i];
-            new_m_points[i] = matrix.multiVector(p);
-        }
-        m_frame = new_m_frame;
-        m_outPoints = new_m_points;
-        update();
-        return;
-    } else if (currentState == Scale) {
-        const QPointF vec = QPointF(localPos.x() - savedPos.x(), localPos.y() - savedPos.y());
-        const int indexAngle = (currentIndexSide + 3 ) % 4;
-        const QPointF t = saved_m_frame[indexAngle];
-        QPointF p1 = saved_m_frame[currentIndexSide];
-        QPointF p2 = saved_m_frame[(currentIndexSide + 1) % 4];
-        QVector2D normal = calcNormal(p1, p2);
-        normal.normalize();
-        float multi = dotProduct(vec, normal.toPointF());
-        float multiX = 1; float multiY = 1;
-        if (currentIndexSide % 2 == 1) {
-            const float newWidth = savedWidthFrame + multi;
-            if (newWidth < 10) return;
-            multiX = newWidth / savedWidthFrame;
-        } else {
-            const float newHeight = savedHeightFrame + multi;
-            if (newHeight < 10) return;
-            multiY = newHeight / savedHeightFrame;
-        }
-        float sin = std::sin(angleFrame);
-        float cos = std::cos(angleFrame);
-        const float a = multiX * cos * cos + multiY * sin * sin;
-        const float b = multiX * sin * cos - multiY * cos * sin;
-        const float c = multiX * cos * sin - multiY * sin * cos;
-        const float d = multiX * sin * sin + multiY * cos * cos;
-        const float e = -t.x() * a - t.y() * c + t.x();
-        const float f = -t.x() * b - t.y() * d + t.y();
-        Matrix matrix(a, b, c, d, e, f);
-        QVector<QPointF> new_m_frame(saved_m_frame.length());
-        for (int i = 0; i < new_m_frame.length(); ++i) {
-            QPointF p = saved_m_frame[i];
-            new_m_frame[i] = matrix.multiVector(p);
-        }
-        QVector<QPointF> new_m_points(saved_m_points);
-        for (int i = 0; i < saved_m_points.length(); ++i) {
-            QPointF p = saved_m_points[i];
-            new_m_points[i] = matrix.multiVector(p);
-        }
-        m_frame = new_m_frame;
-        m_outPoints = new_m_points;
-        update();
+        float angle = amath::dotProduct(ordinatVector, endVector) > 0 ? arccos : - arccos;
+        newFrame.rotate(angle, savedFrame.center());
+        newPolygon.rotate(angle, savedFrame.center());
+        updateFrame();
+    } else if (selectedElement.type == Element::PolygonPolygon) {
+        QPointF v = amath::vector(pos, savedPos);
+        newPolygon.translateSide(v, selectedElement.index);
+        updateFrame();
+    } else if (selectedElement.type == Element::PolygonPoint) {
+        QPointF v = amath::vector(pos, savedPos);
+        newPolygon.translatePoint(v, selectedElement.index);
+        updateFrame();
     }
 }
 
 void EditorPolygon::mouseReleaseEvent(QMouseEvent *event)
 {
-    currentIndexSide = -1;
-    if (currentState == StateChanged::Point) {
-        isVisibleFrame = true;
-        m_frame = findFrame();
+    if (selectedElement.type == Element::PolygonPoint || selectedElement.type == Element::PolygonPolygon) {
+        frame = findFrame();
         update();
+        visibleFrame();
     }
-    currentState = StateChanged::NoChanged;
-    sideActive = -1;
-    cornerActive = -1;
-    rotateActive = false;
+    selectedElement.type = Element::NoType;
+    selectedElement.index = -1;
+    update();
 }
 
 
 void EditorPolygon::hoverMoveEvent(QHoverEvent *event)
 {
-    if (m_frame.size() != 5) {
-        return;
-    }
-    const QPointF savedPos = calcUnscalePoint(event->posF());
-    const QPointF scalePos = event->posF();
-    //polyon
-    for (int i = 0; i < m_outPoints.length(); ++i) {
-        if (isContainsCircle(savedPos, m_outPoints[i], circleRad)) {
-            setCursor(QCursor(Qt::CrossCursor));
+    float angle = frame.rotationAngle();
+    QPointF pos = event->posF();
+    pos = unzoomPoint(pos);
+
+    const float angle45 = M_PI / 4;
+    const float angle90 = M_PI / 2;
+
+    std::function<bool(float)> cursorCb = [this](float angle) {
+
+        const float angle30 = M_PI / 6;
+        const float angle60 = M_PI / 3;
+        const float angle90 = M_PI / 2;
+        const float angle120 = angle90 + angle30;
+        const float angle150 = angle90 + angle60;
+        const float angle180 = M_PI;
+
+        angle = angle < 0 ? M_PI + angle : angle;
+        while(angle > M_PI) {
+            angle -= M_PI;
+        }
+
+        if (0 <= angle && angle < angle30) {
+            setCursor(verSvg);
+            return true;
+        } else if (0 <= angle && angle < angle60) {
+            setCursor(bottomCrossSvg);
+            return true;
+        } else if (angle60 <= angle && angle < angle120) {
+            setCursor(horSvg);
+            return true;
+        } else if (angle120 <= angle && angle < angle150) {
+            setCursor(topCrossSvg);
+            return true;
+        } else if (angle150 <= angle && angle <= angle180) {
+            setCursor(verSvg);
+            return true;
+        }
+        return false;
+    };
+
+    int rectSize = frameSides.size();
+    for (int i = 0; i < rectSize; ++i) {
+        if (frameCorners[i].contains(pos)) {
+            float handleAngle = (angle - angle45 + angle90 * (float)(i));
+            if (cursorCb(handleAngle)) {
+                return;
+            }
+        } else if (frameRotates[i].contains(pos)) {
+            setCursor(rotateSvg);
             return;
         }
     }
-    QVector<QPointF> scaleFrame = QVector<QPointF>(m_frame.length());
-    for (int i = 0; i < scaleFrame.length(); ++i) {
-        scaleFrame[i] = QPointF(m_contentX + m_frame[i].x() * m_scalePoints,
-                               m_contentY + m_frame[i].y() * m_scalePoints);
-    }
-    auto corners = cornerFrame(scaleFrame);
-    auto rotates = rotateFrame(scaleFrame);
-    auto sides = sideFrame(m_frame);
-    for (int i = 0; i < 4; ++i) {
-        // corner
-        if (isContainsRect(scalePos, corners[i][3], corners[i][0], corners[i][1])) {
-            setCursor(QCursor(Qt::SizeBDiagCursor));
-            return;
-        }
-        // rotate
-        if (isContainsRect(scalePos, rotates[i][3], rotates[i][0], rotates[i][1])) {
-            setCursor(QCursor(Qt::SplitVCursor));
-            return;
+    for (int i = 0; i < rectSize; ++i) {
+        if (frameSides[i].contains(pos)) {
+            float handleAngle = (angle + angle90 * (float)(i));
+            if (cursorCb(handleAngle)) {
+                return;
+            }
         }
     }
-    for (int i = 0; i < 4; ++i) {
-        // side
-        if(isContainsRect(savedPos, sides[i][3], sides[i][0], sides[i][1]))
-        {
-            setCursor(QCursor(Qt::SizeVerCursor));
-            return;
-        }
-    }
-    // fill
-    if(isContainsRect(savedPos, m_frame[3], m_frame[0], m_frame[1])) {
-        setCursor(QCursor(Qt::SizeAllCursor));
-        return;
-    }
+
     setCursor(QCursor(Qt::ArrowCursor));
 }
