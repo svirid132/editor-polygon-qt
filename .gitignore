@@ -9,3 +9,5 @@ qml.qrc
 main.cpp
 main.qml
 
+build
+editor-polygon-qt.pro.*
